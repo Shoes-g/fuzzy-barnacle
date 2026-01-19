@@ -53,34 +53,7 @@ def merge_with_imd_data(df, imd_df):
     else:
         df['IMD_Quintile'] = 'Unknown'
     return df
-
-def process_monthly_data(filepath, imd_df):
-    """Main function to process monthly pain data."""
-    try:
-        # Load and clean data
-        df = load_and_clean_pain_data(filepath)
-        
-        # Convert date columns
-        date_cols = ['Arrival DTTM', 'Triage DTTM', 'First Pain Score DTTM', 
-                    'First Analgesia DTTM', 'Second Pain Score DTTM']
-        df = convert_date_columns(df, date_cols)
-        
-        # Create join keys
-        df = create_join_keys(df)
-        
-        # Merge with IMD data
-        df = merge_with_imd_data(df, imd_df)
-        
-        # Calculate time intervals
-        df = calculate_time_intervals(df)
-        
-        # Return the processed DataFrame
-        return df
-        
-    except Exception as e:
-        print(f"Error processing data: {e}")
-        return None
-    
+ 
 def convert_date_columns(df, date_cols):
     """Convert specified columns to datetime."""
     for col in date_cols:
@@ -90,23 +63,45 @@ def convert_date_columns(df, date_cols):
 
 def calculate_time_intervals(df):
     """Calculate time intervals between key events."""
-    # Check if required columns exist
-    required_date_cols = ['Arrival DTTM', 'Triage DTTM', 'First Pain Score DTTM', 
-                         'First Analgesia DTTM', 'Second Pain Score DTTM']
+    print("--- FIX IS RUNNING ---")  # Add this line
+    # 1. Initialize ALL outcome columns with NaN (Empty) to prevent KeyErrors
+    # This ensures the app creates the columns even if data is missing
+    outcome_cols = [
+        'Time_to_Triage_Mins', 
+        'Time_to_PS1_Mins', 
+        'Time_to_A1_Mins', 
+        'Time_to_PS2_Mins', 
+        'A1_to_PS2_Mins', 
+        'PS2_to_A1_Mins'
+    ]
     
-    # Verify all required date columns exist
-    missing_cols = [col for col in required_date_cols if col not in df.columns]
-    if missing_cols:
-        print(f"Warning: Missing date columns: {missing_cols}")
-        return df
-    
-    if 'Arrival DTTM' in df.columns:
+    for col in outcome_cols:
+        if col not in df.columns:
+            df[col] = np.nan
+
+    # 2. Calculate Triage Time (This will now work because your screenshot shows these columns exist)
+    if 'Arrival DTTM' in df.columns and 'Triage DTTM' in df.columns:
         df['Time_to_Triage_Mins'] = (df['Triage DTTM'] - df['Arrival DTTM']).dt.total_seconds() / 60
+    
+    # 3. Calculate First Pain Score Time
+    if 'Arrival DTTM' in df.columns and 'First Pain Score DTTM' in df.columns:
         df['Time_to_PS1_Mins'] = (df['First Pain Score DTTM'] - df['Arrival DTTM']).dt.total_seconds() / 60
+
+    # 4. Calculate Analgesia Time
+    # Note: Your Excel file might name this column "DTTM" or "DTTM.1". 
+    # If the chart is empty, you may need to rename the column in Excel to "First Analgesia DTTM".
+    if 'Arrival DTTM' in df.columns and 'First Analgesia DTTM' in df.columns:
         df['Time_to_A1_Mins'] = (df['First Analgesia DTTM'] - df['Arrival DTTM']).dt.total_seconds() / 60
+        
+    # 5. Calculate Second Pain Score Time
+    if 'Arrival DTTM' in df.columns and 'Second Pain Score DTTM' in df.columns:
         df['Time_to_PS2_Mins'] = (df['Second Pain Score DTTM'] - df['Arrival DTTM']).dt.total_seconds() / 60
+        
+    # 6. Calculate Intervals between Analgesia and PS2
+    if 'First Analgesia DTTM' in df.columns and 'Second Pain Score DTTM' in df.columns:
         df['A1_to_PS2_Mins'] = (df['Second Pain Score DTTM'] - df['First Analgesia DTTM']).dt.total_seconds() / 60
         df['PS2_to_A1_Mins'] = (df['First Analgesia DTTM'] - df['Second Pain Score DTTM']).dt.total_seconds() / 60
+
     return df
 
 def calculate_pain_scores(df):
@@ -246,7 +241,7 @@ def process_monthly_data(pain_data_file, imd_df=None):
             df = create_age_groups(df)
             
             # Best practice logic
-            df = calculate_best_practice(df)
+            df, _ = calculate_best_practice(df)
 
         return df
 
