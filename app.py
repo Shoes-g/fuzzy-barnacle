@@ -204,7 +204,7 @@ if uploaded_file:
 
             with col_bp2:
                 # Call calculate_best_practice and get both the updated df and sankey data
-                df_updated, sankey_data = calculate_best_practice(df)  # Changed: df_updated instead of df
+                df_updated, sankey_data = du.calculate_best_practice(df)  # Changed: df_updated instead of df
 
                 # Create Sankey chart
                 fig = go.Figure(data=[go.Sankey(
