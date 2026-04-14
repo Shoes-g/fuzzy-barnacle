@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -11,223 +12,305 @@ st.set_page_config(page_title="ED Pain Audit Dashboard", layout="wide")
 st.title("🏥 Emergency Department Pain Management Audit")
 st.markdown("### Monthly Quality Improvement Report")
 
-# --- SIDEBAR: CONFIG & UPLOAD ---
+# --- CONFIG & UPLOAD ---
+HISTORY_FOLDER = r"C:\Users\sthug\Documents\PainQIP Local\History_Data"
+IMD_PATH = r"C:\Users\sthug\Documents\PainQIP Local\Data\Indices_of_Deprivation-2025-data_download-file-postcode_join.csv"
+
+# --- 1. LOAD DATA ---
+@st.cache_data
+def get_all_history(folder, _imd_df):
+    return du.load_history_from_folder(folder, _imd_df)
+
+# Load IMD Reference
+try:
+    imd_df = du.load_imd_data(IMD_PATH)
+except:
+    imd_df = None
+
+# Load History
+with st.spinner("Loading Audit History..."):
+    history_df = get_all_history(HISTORY_FOLDER, imd_df)
+
+# --- SIDEBAR ---
 with st.sidebar:
-    st.header("Upload New Data")
-    uploaded_file = st.file_uploader("Upload Monthly Excel Export", type=['xlsx'])
+    st.title("⚙️ Audit Controls")
     
-    st.divider()
-    st.info("Upload the raw Excel export from the ED system. The dashboard will automatically clean and process the data.")
+    # A. Upload New Data
+    st.subheader("1. Input Data")
+    uploaded_file = st.file_uploader("Upload Monthly Export", type=['xlsx'])
+    
+    # B. Combine Data Sources
+    # We start with the history dataframe
+    full_df = history_df.copy() if not history_df.empty else pd.DataFrame()
+    
+    # If user uploads a file, process it and append it to full_df
+    if uploaded_file:
+        with st.spinner("Processing upload..."):
+            new_df = du.process_monthly_data(uploaded_file, imd_df)
+            
+            if new_df is not None:
+                # Add source tag to identify where data came from
+                new_df['_source'] = 'upload' 
+                history_df['_source'] = 'history'
+                
+                # Combine
+                full_df = pd.concat([full_df, new_df], ignore_index=True)
+                
+                # OPTIONAL: Save to history button
+                if st.button("💾 Save Upload to History"):
+                    save_path = os.path.join(HISTORY_FOLDER, uploaded_file.name)
+                    with open(save_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    st.success("Saved! Reload app to see it in history.")
+                    st.cache_data.clear() # Clear cache so next reload picks up the new file
 
-# --- MAIN LOGIC ---
-if uploaded_file:
-    # 1. Load Reference Data (IMD)
-    try:
-        # Update this path to where your big CSV actually lives
-        imd_path = r"C:\Users\sthug\Documents\PainQIP Local\Data\Indices_of_Deprivation-2025-data_download-file-postcode_join.csv"
+    # C. "Time Machine" Selector
+    st.subheader("2. Select Report Month")
+    
+    if not full_df.empty:
+        # Get unique months from the 'Report_Month' column created in data_utils
+        # Format usually 'YYYY-MM'
+        available_months = sorted(full_df['Report_Month'].unique(), reverse=True)
         
-        with st.spinner("Loading IMD Reference Data..."):
-            imd_df = du.load_imd_data(imd_path)
-            st.success("✅ IMD Data Loaded Automatically")
-            
-    except FileNotFoundError:
-        imd_df = None
-        st.warning("⚠️ IMD file not found at the specified path. Deprivation analysis will be skipped.")
+        # The dropdown defaults to the latest month (index 0)
+        selected_month_str = st.selectbox("View Dashboard For:", available_months)
+    else:
+        selected_month_str = None
+        st.warning("No data found. Upload a file or check history folder.")
 
-    # 2. Process Main Data
-    # We use a spinner so the user knows something is happening
-    with st.spinner("Processing data..."):
-        df = du.process_monthly_data(uploaded_file, imd_df)
+# --- MAIN DASHBOARD LOGIC ---
+if selected_month_str and not full_df.empty:
     
-    # Ensure df is a pandas DataFrame
-    if df is not None:
-        if not isinstance(df, pd.DataFrame):
-            # If df is a tuple, convert it to DataFrame
-            if isinstance(df, tuple):
-                # Convert tuple to DataFrame - adjust column names as needed
-                df = pd.DataFrame(df[0], columns=df[1])
-            else:
-                raise TypeError("df must be a pandas DataFrame or a tuple with data and column names")
+    # 1. Define Dates
+    # Convert string (e.g., "2025-10") to a Period object
+    selected_period = pd.Period(selected_month_str)
     
-    if df is not None:
-        # --- TAB STRUCTURE ---
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Headlines", "⏱️ Time Analysis", "👥 Demographics", "📉 Best Practice"])
+    # Calculate the comparison window (The 3 months BEFORE the selected month)
+    comp_start = selected_period - 3
+    comp_end = selected_period - 1
+    
+    st.header(f"🏥 Audit Report: {selected_period.strftime('%B %Y')}")
+    st.caption(f"Comparing against performance from: {comp_start.strftime('%b %Y')} - {comp_end.strftime('%b %Y')}")
 
-        # --- TAB 1: HEADLINES ---
-        with tab1:
-            st.subheader("Key Performance Indicators")
-            
-            # Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            
-            total_patients = len(df)
-            median_triage = df['Time_to_Triage_Mins'].median()
-            median_analgesia = df['Time_to_A1_Mins'].median()
-            perc_analgesia_15 = (len(df[df['Time_to_A1_Mins'] <= 15]) / total_patients) * 100
+    # 2. Filter Data
+    # Current Data: Matches the selected month
+    current_df = full_df[full_df['Report_Month'] == selected_month_str].copy()
+    
+    # Historical Data: Matches the 3-month window
+    # We look for strings that fall into our calculated range
+    # (Using Period objects for comparison is safer than strings)
+    full_df['Period_Obj'] = full_df['Report_Month'].apply(pd.Period)
+    
+    history_window_df = full_df[
+        (full_df['Period_Obj'] >= comp_start) & 
+        (full_df['Period_Obj'] <= comp_end)
+    ].copy()
 
-            col1.metric("Total Patients", total_patients)
-            col2.metric("Median Time to Triage", f"{median_triage:.0f} mins")
-            col3.metric("Median Time to Analgesia", f"{median_analgesia:.0f} mins")
-            col4.metric("% Analgesia < 15 mins", f"{perc_analgesia_15:.1f}%")
+    # 3. Calculate Comparisons
+    # Calculate baselines from the history window
+    if not history_window_df.empty:
+        baseline_triage = history_window_df['Time_to_Triage_Mins'].median()
+        baseline_analgesia = history_window_df['Time_to_A1_Mins'].median()
+        baseline_pct_15 = (len(history_window_df[history_window_df['Time_to_A1_Mins'] < 15]) / len(history_window_df)) * 100
+        has_baseline = True
+    else:
+        baseline_triage = 0
+        baseline_analgesia = 0
+        baseline_pct_15 = 0
+        has_baseline = False
 
-            st.divider()
-            
-            # Pain Score Improvement (Box Plot)
-            st.markdown("#### Pain Score Improvement")
-            fig_imp = px.box(df, x='Pain_Score_Improvement', 
-                             title="Change in Pain Score (Second - First)",
-                             labels={'Pain_Score_Improvement': 'Change in Score'})
-            st.plotly_chart(fig_imp, use_container_width=True)
+    # 4. Render Tabs
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Headlines", "⏱️ Time Analysis", "👥 Demographics", "⭐ Best Practice", "📈 Trends"])
 
-        # --- TAB 2: TIME ANALYSIS ---
-        with tab2:
-            st.subheader("Time Interval Distribution")
-            
-            # Select metric to view
-            metric_choice = st.selectbox("Select Time Metric", 
-                ['Time_to_Triage_Mins', 'Time_to_PS1_Mins', 'Time_to_A1_Mins', 'A1_to_PS2_Mins'])
+    with tab1:
+        st.subheader("Key Performance Indicators")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # Calculate Current Stats
+        curr_triage = current_df['Time_to_Triage_Mins'].median()
+        curr_analgesia = current_df['Time_to_A1_Mins'].median()
+        curr_pct_15 = (len(current_df[current_df['Time_to_A1_Mins'] < 15]) / len(current_df)) * 100
+        
+        # Render Metrics with Comparisons
+        col1.metric("Total Patients", len(current_df))
+        
+        col2.metric("Median Triage", f"{curr_triage:.0f} m", 
+                    f"{curr_triage - baseline_triage:.1f} m" if has_baseline else None, 
+                    delta_color="inverse")
+                    
+        col3.metric("Median Analgesia", f"{curr_analgesia:.0f} m", 
+                    f"{curr_analgesia - baseline_analgesia:.1f} m" if has_baseline else None, 
+                    delta_color="inverse")
+                    
+        col4.metric("% Analgesia < 15m", f"{curr_pct_15:.1f}%", 
+                    f"{curr_pct_15 - baseline_pct_15:.1f}%" if has_baseline else None)
+        
+        st.divider()
+        st.info("Data displayed in other tabs reflects the **Selected Month** only. See 'Trends' tab for historical view.")
 
-            # Create a note about negative values for A1_to_PS2_Mins
-            if metric_choice == 'A1_to_PS2_Mins':
-                df_filtered = df[df[metric_choice] >= 0]
-                negative_count = df[df[metric_choice] < 0].shape[0]
-                if negative_count > 0:
-                    st.info(f"Note: {negative_count} records have negative values in {metric_choice}, indicating patients received their first dose of analgesia after their second pain score.")
-            else:
-                df_filtered = df
-            
-            # Create subplots
-            from plotly.subplots import make_subplots
-            import plotly.graph_objects as go
-            
-            fig = make_subplots(
-                rows=2, cols=1,
-                subplot_titles=('Histogram', 'Box Plot'),
-                vertical_spacing=0.2
-            )
-            
-            # Histogram
-            if metric_choice == 'A1_to_PS2_Mins':
-                # Separate data for moderate vs severe pain
-                df_moderate = df_filtered[(df_filtered[metric_choice] >= 0) & (df_filtered['First Pain Score'] == 'Mod Pain')]
-                df_severe = df_filtered[(df_filtered[metric_choice] >= 0) & (df_filtered['First Pain Score'] == 'Sev Pain')]
-                
-                # Create histogram with different colors for pain severity
-                hist_moderate = px.histogram(df_moderate, x=metric_choice, nbins=50, 
-                                           color_discrete_sequence=['#3366cc'], opacity=0.7)
-                hist_severe = px.histogram(df_severe, x=metric_choice, nbins=50, 
-                                         color_discrete_sequence=['#ff6666'], opacity=0.7)
-                
-                # Add traces to the figure
-                for trace in hist_moderate.data:
-                    trace.name = 'Moderate Pain'
-                    trace.hovertemplate = "<b>%{data.name}</b><br>Minutes: %{x}<br>Count: %{y}<extra></extra>"
-                    fig.add_trace(trace, row=1, col=1)
-                for trace in hist_severe.data:
-                    trace.name = 'Severe Pain'
-                    trace.hovertemplate = "<b>%{data.name}</b><br>Minutes: %{x}<br>Count: %{y}<extra></extra>"
-                    fig.add_trace(trace, row=1, col=1)
-            else:
-                hist = px.histogram(df_filtered, x=metric_choice, nbins=50, 
-                        color_discrete_sequence=['#3366cc'])
-                for trace in hist.data:
-                    trace.hovertemplate = "<b>Minutes: %{x}</b><br>Count: %{y}<extra></extra>"
-                    fig.add_trace(trace, row=1, col=1)
-            
-            # Box plot (horizontal orientation)
-            if metric_choice == 'A1_to_PS2_Mins':
-                # Create box plots for moderate vs severe pain
-                box_moderate = px.box(df_moderate, x=metric_choice, color_discrete_sequence=['#3366cc'])
-                box_severe = px.box(df_severe, x=metric_choice, color_discrete_sequence=['#ff6666'])
-                
-                # Add traces to the figure
-                for trace in box_moderate.data:
-                    current_template = trace.hovertemplate if trace.hovertemplate else ""
-                    trace.hovertemplate = "<b>%{data.name}</b><br>" + current_template
-                    fig.add_trace(trace, row=2, col=1)
-                for trace in box_severe.data:
-                    current_template = trace.hovertemplate if trace.hovertemplate else ""
-                    trace.hovertemplate = "<b>%{data.name}</b><br>" + current_template
-                    fig.add_trace(trace, row=2, col=1)
-            else:
-                box = px.box(df_filtered, x=metric_choice, color_discrete_sequence=['#3366cc'])
-                for trace in box.data:
-                    fig.add_trace(trace, row=2, col=1)
-            
-            # Add the 15 min target line to histogram (for severe pain)
-            if metric_choice == 'A1_to_PS2_Mins':
-                fig.add_vline(x=15, line_dash="dash", line_color="red", annotation_text="15 min Target (Severe)", annotation=dict(textangle=-90), row=1, col=1)
-                fig.add_vline(x=30, line_dash="dash", line_color="orange", annotation_text="30 min Target (Moderate)", annotation=dict(textangle=-90), row=1, col=1)
-            else:
-                fig.add_vline(x=15, line_dash="dash", line_color="red", annotation_text="15 min Target", row=1, col=1)
-            
-            # Update layout for consistent sizing and x-axis range
-            fig.update_layout(
-                height=600, 
-                showlegend=True, 
-                title_text=f"Distribution: {metric_choice}",
-                barmode='overlay',
-                boxmode='group'
-            )
-            
-            # Get the x-axis range from the filtered data to ensure consistency
-            if metric_choice == 'A1_to_PS2_Mins':
-                x_range = [0, df_filtered[metric_choice].max()]
-            else:
-                x_range = list(hist.layout.xaxis.range) if hist.layout.xaxis.range else [df_filtered[metric_choice].min(), df_filtered[metric_choice].max()]
-                        
-            # Update axes labels and ranges
-            fig.update_xaxes(title_text="Minutes", row=1, col=1, range=x_range)
-            fig.update_yaxes(title_text="Count", row=1, col=1)
-            fig.update_xaxes(title_text="Minutes", row=2, col=1, range=x_range)
-            fig.update_yaxes(title_text="", row=2, col=1)
-            
-            st.plotly_chart(fig, use_container_width=True)
+    # --- TAB 2: TIME ANALYSIS ---
+    with tab2:
+        st.subheader("Time Interval Distribution")
+        
+        # Select metric to view
+        metric_choice = st.selectbox("Select Time Metric", 
+            ['Time_to_Triage_Mins', 'Time_to_PS1_Mins', 'Time_to_A1_Mins', 'A1_to_PS2_Mins'])
 
-        # --- TAB 3: DEMOGRAPHICS & EQUITY ---
+        # Create a note about negative values for A1_to_PS2_Mins
+        if metric_choice == 'A1_to_PS2_Mins':
+            df_filtered = current_df[current_df[metric_choice] >= 0]
+            negative_count = current_df[current_df[metric_choice] < 0].shape[0]
+            if negative_count > 0:
+                st.info(f"Note: {negative_count} records have negative values in {metric_choice}, indicating patients received their first dose of analgesia after their second pain score.")
+        else:
+            df_filtered = current_df
+        
+        # Create subplots
+        from plotly.subplots import make_subplots
+        import plotly.graph_objects as go
+        
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('Histogram', 'Box Plot'),
+            vertical_spacing=0.2
+        )
+        
+        # Histogram
+        if metric_choice == 'A1_to_PS2_Mins':
+            # Separate data for moderate vs severe pain
+            df_moderate = df_filtered[(df_filtered[metric_choice] >= 0) & (df_filtered['First Pain Score'] == 'Mod Pain')]
+            df_severe = df_filtered[(df_filtered[metric_choice] >= 0) & (df_filtered['First Pain Score'] == 'Sev Pain')]
+            
+            # Create histogram with different colors for pain severity
+            hist_moderate = px.histogram(df_moderate, x=metric_choice, nbins=50, 
+                                        color_discrete_sequence=['#3366cc'], opacity=0.7)
+            hist_severe = px.histogram(df_severe, x=metric_choice, nbins=50, 
+                                        color_discrete_sequence=['#ff6666'], opacity=0.7)
+            
+            # Add traces to the figure
+            for trace in hist_moderate.data:
+                trace.name = 'Moderate Pain'
+                trace.hovertemplate = "<b>%{data.name}</b><br>Minutes: %{x}<br>Count: %{y}<extra></extra>"
+                fig.add_trace(trace, row=1, col=1)
+            for trace in hist_severe.data:
+                trace.name = 'Severe Pain'
+                trace.hovertemplate = "<b>%{data.name}</b><br>Minutes: %{x}<br>Count: %{y}<extra></extra>"
+                fig.add_trace(trace, row=1, col=1)
+        else:
+            hist = px.histogram(df_filtered, x=metric_choice, nbins=50, 
+                    color_discrete_sequence=['#3366cc'])
+            for trace in hist.data:
+                trace.hovertemplate = "<b>Minutes: %{x}</b><br>Count: %{y}<extra></extra>"
+                fig.add_trace(trace, row=1, col=1)
+        
+        # Box plot (horizontal orientation)
+        if metric_choice == 'A1_to_PS2_Mins':
+            # Create box plots for moderate vs severe pain
+            box_moderate = px.box(df_moderate, x=metric_choice, color_discrete_sequence=['#3366cc'])
+            box_severe = px.box(df_severe, x=metric_choice, color_discrete_sequence=['#ff6666'])
+            
+            # Add traces to the figure
+            for trace in box_moderate.data:
+                current_template = trace.hovertemplate if trace.hovertemplate else ""
+                trace.hovertemplate = "<b>%{data.name}</b><br>" + current_template
+                fig.add_trace(trace, row=2, col=1)
+            for trace in box_severe.data:
+                current_template = trace.hovertemplate if trace.hovertemplate else ""
+                trace.hovertemplate = "<b>%{data.name}</b><br>" + current_template
+                fig.add_trace(trace, row=2, col=1)
+        else:
+            box = px.box(df_filtered, x=metric_choice, color_discrete_sequence=['#3366cc'])
+            for trace in box.data:
+                fig.add_trace(trace, row=2, col=1)
+        
+        # Add the 15 min target line to histogram (for severe pain)
+        if metric_choice == 'A1_to_PS2_Mins':
+            fig.add_vline(x=15, line_dash="dash", line_color="red", annotation_text="15 min Target (Severe)", annotation=dict(textangle=-90), row=1, col=1)
+            fig.add_vline(x=30, line_dash="dash", line_color="orange", annotation_text="30 min Target (Moderate)", annotation=dict(textangle=-90), row=1, col=1)
+        else:
+            fig.add_vline(x=15, line_dash="dash", line_color="red", annotation_text="15 min Target", row=1, col=1)
+        
+        # Update layout for consistent sizing and x-axis range
+        fig.update_layout(
+            height=600, 
+            showlegend=True, 
+            title_text=f"Distribution: {metric_choice}",
+            barmode='overlay',
+            boxmode='group'
+        )
+        
+        # Get the x-axis range from the filtered data to ensure consistency
+        if metric_choice == 'A1_to_PS2_Mins':
+            x_range = [0, df_filtered[metric_choice].max()]
+        else:
+            x_range = [df_filtered[metric_choice].min(), df_filtered[metric_choice].max()]
+                    
+        # Update axes labels and ranges
+        fig.update_xaxes(title_text="Minutes", row=1, col=1, range=x_range)
+        fig.update_yaxes(title_text="Count", row=1, col=1)
+        fig.update_xaxes(title_text="Minutes", row=2, col=1, range=x_range)
+        fig.update_yaxes(title_text="", row=2, col=1)
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+    # --- TAB 3: DEMOGRAPHICS & EQUITY ---
+    try:
         import equity_tab as et
         with tab3:
-            et.render_equity_tab(df)
+            et.render_equity_tab(current_df)
+    except ImportError:
+        with tab3:
+            st.warning("Equity analysis module not found. Please ensure 'equity_tab.py' exists.")
 
-        # --- TAB 4: BEST PRACTICE ---
-        with tab4:
-            st.subheader("Best Practice Compliance")
-            
-            # Sankey Diagram Data Prep
-            bp_counts = df['Best_Practice'].value_counts()
-            
-            col_bp1, col_bp2 = st.columns([1, 2])
-            
-            with col_bp1:
-                st.dataframe(bp_counts)
-                st.metric("Compliance Rate", f"{(len(df[df['Best_Practice']=='Yes'])/len(df)*100):.1f}%")
+    # --- TAB 4: BEST PRACTICE ---
+    with tab4:
+        st.subheader("Best Practice Compliance")
+        
+        # Sankey Diagram Data Prep
+        bp_counts = current_df['Best_Practice'].value_counts()
+        
+        col_bp1, col_bp2 = st.columns([1, 2])
+        
+        with col_bp1:
+            st.dataframe(bp_counts)
+            st.metric("Compliance Rate", f"{(len(current_df[current_df['Best_Practice']=='Yes'])/len(current_df)*100):.1f}%")
 
-            with col_bp2:
-                # Call calculate_best_practice and get both the updated df and sankey data
-                df_updated, sankey_data = du.calculate_best_practice(df)  # Changed: df_updated instead of df
+        with col_bp2:
+            # Call calculate_best_practice and get both the updated df and sankey data
+            df_updated, sankey_data = du.calculate_best_practice(current_df)  # Changed: df_updated instead of df
 
-                # Create Sankey chart
-                fig = go.Figure(data=[go.Sankey(
-                    node=dict(
-                        pad=15,
-                        thickness=20,
-                        line=dict(color="black", width=0.5),
-                        label=sankey_data['labels'],
-                        color="blue"
-                    ),
-                    link=dict(
-                        source=sankey_data['source'],
-                        target=sankey_data['target'],
-                        value=sankey_data['value']
-                    )
-                )])
+            # Create Sankey chart
+            fig = go.Figure(data=[go.Sankey(
+                node=dict(
+                    pad=15,
+                    thickness=20,
+                    line=dict(color="black", width=0.5),
+                    label=sankey_data['labels'],
+                    color="blue"
+                ),
+                link=dict(
+                    source=sankey_data['source'],
+                    target=sankey_data['target'],
+                    value=sankey_data['value']
+                )
+            )])
 
-                fig.update_layout(title_text="Patient Flow through Pain Management Best Practice Criteria", font_size=10)
-                st.plotly_chart(fig)
+            fig.update_layout(title_text="Patient Flow through Pain Management Best Practice Criteria", font_size=10)
+            st.plotly_chart(fig)
 
-    else:
-        st.error("Data processing failed. Please check the file format.")
-
+    # --- TAB 5: TRENDS ---
+    with tab5:
+        # Trends Tab: Show the trend line up to the selected month
+        st.subheader("Historical Context")
+        
+        # We might want to see the trend leading UP TO the selected month
+        # So filter the full dataset to include everything <= selected_period
+        trend_view_df = full_df[full_df['Period_Obj'] <= selected_period].copy()
+        
+        # Create Trend Chart (same logic as before)
+        monthly_stats = trend_view_df.groupby('Report_Month')[['Time_to_Triage_Mins', 'Time_to_PS1_Mins', 'Time_to_A1_Mins']].median().reset_index()
+        fig_trend = px.line(monthly_stats, x='Report_Month', y=['Time_to_Triage_Mins','Time_to_PS1_Mins', 'Time_to_A1_Mins'], markers=True)
+        st.plotly_chart(fig_trend)
 else:
     # Landing page content
     st.markdown("""
