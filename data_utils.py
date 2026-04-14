@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
+import os
+import glob
 
 # --- CONFIGURATION ---
 COLS_TO_DROP = ['Surname', 'Forename']
@@ -53,7 +55,34 @@ def merge_with_imd_data(df, imd_df):
     else:
         df['IMD_Quintile'] = 'Unknown'
     return df
- 
+
+def load_history_from_folder(folder_path, imd_df=None):
+    """
+    Loads all .xlsx files from a specified folder and combines them.
+    """
+    all_dfs = []
+    # Find all Excel files in the folder
+    files = glob.glob(os.path.join(folder_path, "*.xlsx"))
+    
+    print(f"Found {len(files)} history files in {folder_path}")
+    
+    for f in files:
+        try:
+            # We use the existing processing function for consistency
+            # This ensures history files get the same cleaning/calculations as new ones
+            df = process_monthly_data(f, imd_df)
+            
+            if df is not None and not df.empty:
+                all_dfs.append(df)
+        except Exception as e:
+            print(f"Error loading history file {f}: {e}")
+            
+    if all_dfs:
+        combined_df = pd.concat(all_dfs, ignore_index=True)
+        return combined_df
+    else:
+        return pd.DataFrame()
+
 def convert_date_columns(df, date_cols):
     """Convert specified columns to datetime."""
     for col in date_cols:
@@ -123,40 +152,40 @@ def create_age_groups(df):
 def calculate_best_practice(df):
     """Calculate best practice compliance based on clinical guidelines."""
     # "Yes" if:
-    # (PS1 <= 15) AND
-    # ( (Mod Pain AND A1 <= 15 AND PS2_diff <= 30) OR (Sev Pain AND A1 <= 15 AND PS2_diff <= 15) )
+    # (PS1 < 15) AND
+    # ( (Mod Pain AND A1 < 15 AND PS2_diff < 30) OR (Sev Pain AND A1 < 15 AND PS2_diff < 15) )
     condition_mod = (
         (df['First Pain Score'] == 'Mod Pain') & 
-        (df['Time_to_A1_Mins'] <= 15) & 
-        (df['A1_to_PS2_Mins'] <= 30) & 
+        (df['Time_to_A1_Mins'] < 15) & 
+        (df['A1_to_PS2_Mins'] < 30) & 
         (df['A1_to_PS2_Mins'] > 0)
     )
     condition_sev = (
         (df['First Pain Score'] == 'Sev Pain') & 
-        (df['Time_to_A1_Mins'] <= 15) & 
-        (df['A1_to_PS2_Mins'] <= 15) & 
+        (df['Time_to_A1_Mins'] < 15) & 
+        (df['A1_to_PS2_Mins'] < 15) & 
         (df['A1_to_PS2_Mins'] > 0)
     )
     
     df['Best_Practice'] = np.where(
-        (df['Time_to_PS1_Mins'] <= 15) & (condition_mod | condition_sev),
+        (df['Time_to_PS1_Mins'] < 15) & (condition_mod | condition_sev),
         'Yes', 'No'
     )
     
     # Calculate statistics for Sankey chart
     total_patients = len(df)
-    ps1_15_mins = len(df[df['Time_to_PS1_Mins'] <= 15])
-    severe_ps1_15_mins = len(df[(df['First Pain Score'] == 'Sev Pain') & (df['Time_to_PS1_Mins'] <= 15)])
-    moderate_ps1_15_mins = len(df[(df['First Pain Score'] == 'Mod Pain') & (df['Time_to_PS1_Mins'] <= 15)])
+    ps1_15_mins = len(df[df['Time_to_PS1_Mins'] < 15])
+    severe_ps1_15_mins = len(df[(df['First Pain Score'] == 'Sev Pain') & (df['Time_to_PS1_Mins'] < 15)])
+    moderate_ps1_15_mins = len(df[(df['First Pain Score'] == 'Mod Pain') & (df['Time_to_PS1_Mins'] < 15)])
     
     # Calculate best practice compliance
     best_practice_yes = len(df[df['Best_Practice'] == 'Yes'])
     best_practice_no = len(df[df['Best_Practice'] == 'No'])
     
     # Calculate PS1 & A1 compliance
-    ps1_a1_15_mins = len(df[(df['Time_to_PS1_Mins'] <= 15) & (df['Time_to_A1_Mins'] <= 15)])
-    severe_ps1_a1_15_mins = len(df[(df['First Pain Score'] == 'Sev Pain') & (df['Time_to_PS1_Mins'] <= 15) & (df['Time_to_A1_Mins'] <= 15)])
-    moderate_ps1_a1_15_mins = len(df[(df['First Pain Score'] == 'Mod Pain') & (df['Time_to_PS1_Mins'] <= 15) & (df['Time_to_A1_Mins'] <= 15)])
+    ps1_a1_15_mins = len(df[(df['Time_to_PS1_Mins'] < 15) & (df['Time_to_A1_Mins'] < 15)])
+    severe_ps1_a1_15_mins = len(df[(df['First Pain Score'] == 'Sev Pain') & (df['Time_to_PS1_Mins'] < 15) & (df['Time_to_A1_Mins'] < 15)])
+    moderate_ps1_a1_15_mins = len(df[(df['First Pain Score'] == 'Mod Pain') & (df['Time_to_PS1_Mins'] < 15) & (df['Time_to_A1_Mins'] < 15)])
     
     # Calculate best practice compliance
     severe_best_practice = len(df[(df['First Pain Score'] == 'Sev Pain') & (df['Best_Practice'] == 'Yes')])
@@ -165,12 +194,12 @@ def calculate_best_practice(df):
     # Create Sankey data
     labels = [
         f"Total Patients ({total_patients})", # 0
-        f"PS1 <= 15 Mins ({ps1_15_mins})", # 1
+        f"PS1 < 15 Mins ({ps1_15_mins})", # 1
         f"PS1 > 15 Mins ({total_patients - ps1_15_mins})",  # 2
-        f"Severe Pain (PS1 <= 15 Mins) ({severe_ps1_15_mins})", # 3
-        f"Moderate Pain (PS1 <= 15 Mins) ({moderate_ps1_15_mins})", # 4
-        f"Sev Pain (PS1 & A1 <= 15 Mins) ({severe_ps1_a1_15_mins})", # 5
-        f"Mod Pain (PS1 & A1 <= 15 Mins) ({moderate_ps1_a1_15_mins})", # 6
+        f"Severe Pain (PS1 < 15 Mins) ({severe_ps1_15_mins})", # 3
+        f"Moderate Pain (PS1 < 15 Mins) ({moderate_ps1_15_mins})", # 4
+        f"Sev Pain (PS1 & A1 < 15 Mins) ({severe_ps1_a1_15_mins})", # 5
+        f"Mod Pain (PS1 & A1 < 15 Mins) ({moderate_ps1_a1_15_mins})", # 6
         f"Sev Pain (PS1&A1>15Mins) ({severe_ps1_15_mins - severe_ps1_a1_15_mins})", # 7
         f"Mod Pain (PS1&A1>15Mins) ({moderate_ps1_15_mins - moderate_ps1_a1_15_mins})", # 8
         f"Severe Pain Best Practice ({severe_best_practice})", # 9
