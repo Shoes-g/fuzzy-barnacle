@@ -16,7 +16,7 @@ def render_equity_tab(df):
             group_map = {
                 "Age Group": "Age_Group",
                 "Gender": "Gender",
-                "Ethnicity": "Ethnicity", 
+                "Ethnicity": "Ethnicity_Group", 
                 "Deprivation (IMD)": "IMD_Quintile"
             }
             selected_group_label = st.selectbox("Select Demographic Group", list(group_map.keys()))
