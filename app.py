@@ -119,8 +119,15 @@ if selected_month_str and not full_df.empty:
         baseline_pct_15 = 0
         has_baseline = False
 
-    # 4. Render Tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Headlines", "⏱️ Time Analysis", "👥 Demographics", "⭐ Best Practice", "📈 Trends"])
+    # 4. Render Tabs (Updated to include Data Summary)
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Headlines", 
+        "⏱️ Time Analysis", 
+        "👥 Demographics", 
+        "⭐ Best Practice", 
+        "📈 Trends",
+        "📋 Data Summary"
+    ])
 
     with tab1:
         st.subheader("Key Performance Indicators")
@@ -155,7 +162,27 @@ if selected_month_str and not full_df.empty:
         # Select metric to view
         metric_choice = st.selectbox("Select Time Metric", 
             ['Time_to_Triage_Mins', 'Time_to_PS1_Mins', 'Time_to_A1_Mins', 'A1_to_PS2_Mins'])
-
+        
+        # Calculate and display the percentage of patients with valid data for the selected metric
+        total_pts = len(current_df)
+        if total_pts > 0:
+            # Count how many patients have data for the currently selected metric
+            valid_count = current_df[metric_choice].notna().sum()
+            pct_complete = (valid_count / total_pts) * 100
+            
+            # Map the database column names to user-friendly labels
+            metric_labels = {
+                'Time_to_Triage_Mins': 'Patients Triaged',
+                'Time_to_PS1_Mins': 'Received 1st Pain Score',
+                'Time_to_A1_Mins': 'Received Analgesia',
+                'A1_to_PS2_Mins': 'Received 2nd Pain Score'
+            }
+            display_label = metric_labels.get(metric_choice, 'Data Recorded')
+            
+            # Display the metric dynamically
+            st.metric(display_label, f"{pct_complete:.1f}%", f"{valid_count} of {total_pts} patients", delta_color="off")
+            st.divider()
+        
         # Create a note about negative values for A1_to_PS2_Mins
         if metric_choice == 'A1_to_PS2_Mins':
             df_filtered = current_df[current_df[metric_choice] >= 0]
@@ -311,6 +338,64 @@ if selected_month_str and not full_df.empty:
         monthly_stats = trend_view_df.groupby('Report_Month')[['Time_to_Triage_Mins', 'Time_to_PS1_Mins', 'Time_to_A1_Mins']].median().reset_index()
         fig_trend = px.line(monthly_stats, x='Report_Month', y=['Time_to_Triage_Mins','Time_to_PS1_Mins', 'Time_to_A1_Mins'], markers=True)
         st.plotly_chart(fig_trend)
+
+    # --- TAB 6: DATA SUMMARY ---
+    with tab6:
+        st.subheader("📋 Executive Summary Table")
+        st.markdown("A quick tabular overview of the key clinical milestones (median minutes) for the selected month compared to the previous 3-month baseline.")
+        
+        # Helper function to safely format medians
+        def format_median(series):
+            val = series.median()
+            return f"{val:.1f}" if pd.notna(val) else "N/A"
+
+        # Construct the table data
+        summary_data = {
+            "Metric": [
+                "Time to Triage",
+                "Time to First Pain Score",
+                "Time to First Analgesia",
+                "Time to Second Pain Score"
+            ],
+            "Selected Month Median (Mins)": [
+                format_median(current_df['Time_to_Triage_Mins']),
+                format_median(current_df['Time_to_PS1_Mins']),
+                format_median(current_df['Time_to_A1_Mins']),
+                format_median(current_df['Time_to_PS2_Mins'])
+            ]
+        }
+
+        # Add baseline data if it exists
+        if has_baseline:
+            summary_data["Previous 3-Month Median (Mins)"] = [
+                format_median(history_window_df['Time_to_Triage_Mins']),
+                format_median(history_window_df['Time_to_PS1_Mins']),
+                format_median(history_window_df['Time_to_A1_Mins']),
+                format_median(history_window_df['Time_to_PS2_Mins'])
+            ]
+            
+            # Optional: Calculate the difference
+            summary_data["Difference"] = [
+                f"{float(summary_data['Selected Month Median (Mins)'][i]) - float(summary_data['Previous 3-Month Median (Mins)'][i]):+.1f}" 
+                if summary_data['Selected Month Median (Mins)'][i] != "N/A" and summary_data['Previous 3-Month Median (Mins)'][i] != "N/A" 
+                else "N/A"
+                for i in range(4)
+            ]
+
+        # Convert to DataFrame and display
+        summary_df = pd.DataFrame(summary_data)
+        
+        # Use st.dataframe for a nice interactive table, or st.table for a completely static one
+        st.dataframe(summary_df, hide_index=True, use_container_width=True)
+        
+        # Add an easy download button for the summary
+        csv = summary_df.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="⬇️ Download Summary as CSV",
+            data=csv,
+            file_name=f"pain_audit_summary_{selected_month_str}.csv",
+            mime="text/csv",
+        )
 else:
     # Landing page content
     st.markdown("""
