@@ -149,6 +149,33 @@ def create_age_groups(df):
     df['Age_Group'] = pd.cut(df['Age'], bins=age_bins, labels=age_labels, right=False)
     return df
 
+def group_ethnicity(df):
+    """Groups granular NHS ethnicities into high-level UK census categories."""
+    def map_census_group(val):
+        if pd.isna(val) or val == 'Unknown' or val == 'Not Stated':
+            return 'Unknown'
+            
+        val_lower = str(val).lower()
+        
+        # Keyword matching for robust categorization
+        if any(keyword in val_lower for keyword in ['white', 'british', 'irish', 'cornish', 'english', 'scottish', 'welsh']):
+            return 'White'
+        elif any(keyword in val_lower for keyword in ['asian', 'indian', 'pakistani', 'bangladeshi', 'chinese']):
+            return 'Asian'
+        elif any(keyword in val_lower for keyword in ['black', 'african', 'caribbean']):
+            return 'Black'
+        elif any(keyword in val_lower for keyword in ['mixed', 'multiple']):
+            return 'Mixed'
+        else:
+            return 'Other'
+
+    if 'Ethnicity' in df.columns:
+        df['Ethnicity_Group'] = df['Ethnicity'].apply(map_census_group)
+    else:
+        df['Ethnicity_Group'] = 'Unknown'
+        
+    return df
+
 def calculate_best_practice(df):
     """Calculate best practice compliance based on clinical guidelines."""
     # "Yes" if:
@@ -269,6 +296,9 @@ def process_monthly_data(pain_data_file, imd_df=None):
             # Age groups
             df = create_age_groups(df)
             
+            # Ethnicity groups
+            df = group_ethnicity(df)
+
             # Best practice logic
             df, _ = calculate_best_practice(df)
 
